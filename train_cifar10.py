@@ -19,6 +19,7 @@ import torchvision
 import torchvision.transforms as transforms
 
 import os
+os.environ["WANDB_MODE"] = "offline"
 import argparse
 import pandas as pd
 import csv
