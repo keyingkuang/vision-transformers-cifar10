@@ -254,22 +254,42 @@ elif args.opt == "sgd":
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_epochs)
 
 ##### Training
-scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+use_amp = torch.cuda.is_available()  # Set to True if CUDA is available
+if use_amp:
+    scaler = torch.cuda.amp.GradScaler(enabled=True)
+else:
+    scaler = None  # No scaler needed for CPU
+
 def train(epoch):
     print('\nEpoch: %d' % epoch)
     net.train()
     train_loss = 0
     correct = 0
     total = 0
+
+    # Initialize scaler for CUDA (GPU) use
+    if torch.cuda.is_available():
+        scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    else:
+        scaler = None  # No scaler for CPU
+
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         inputs, targets = inputs.to(device), targets.to(device)
-        # Train with amp
-        with torch.cuda.amp.autocast(enabled=use_amp):
+
+        # Train with or without amp based on the device
+        if scaler:  # When using CUDA (GPU)
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                outputs = net(inputs)
+                loss = criterion(outputs, targets)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:  # When using CPU, no AMP, normal training
             outputs = net(inputs)
             loss = criterion(outputs, targets)
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+            loss.backward()
+            optimizer.step()
+
         optimizer.zero_grad()
 
         train_loss += loss.item()
@@ -280,6 +300,7 @@ def train(epoch):
         progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
             % (train_loss/(batch_idx+1), 100.*correct/total, correct, total))
     return train_loss/(batch_idx+1)
+
 
 ##### Validation
 def test(epoch):
@@ -307,8 +328,7 @@ def test(epoch):
     if acc > best_acc:
         print('Saving..')
         state = {"model": net.state_dict(),
-              "optimizer": optimizer.state_dict(),
-              "scaler": scaler.state_dict()}
+              "optimizer": optimizer.state_dict()}
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
         torch.save(state, './checkpoint/'+args.net+'-{}-ckpt.t7'.format(args.patch))
@@ -327,7 +347,7 @@ list_acc = []
 if usewandb:
     wandb.watch(net)
     
-net.cuda()
+net.to(device)
 for epoch in range(start_epoch, args.n_epochs):
     start = time.time()
     trainloss = train(epoch)
